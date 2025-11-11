@@ -1,21 +1,32 @@
-# Python cache files
+# Python
 __pycache__/
-*.pyc
+*.py[cod]
+*.pyo
+*.pyd
+*.log
+*.env
+.env
+.venv/
+venv/
+*.sqlite3
+.DS_Store
 
-# Jupyter notebook checkpoints
+# Jupyter
 .ipynb_checkpoints/
 
-# Data and results
+# Data & results
 data/
 results/
 
-# Environment files
-.env
-*.env
+# Model weights
+models/
+*.pt
+*.bin
+*.ckpt
 
-# VS Code settings
+# VSCode / IDE
 .vscode/
+.idea/
 
-# MacOS or Windows system files
-.DS_Store
-Thumbs.db
+# Docker
+*.dockerignore
