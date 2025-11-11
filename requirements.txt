@@ -1,0 +1,5 @@
+torch==2.8.0+cpu -f https://download.pytorch.org/whl/torch_stable.html
+transformers==4.36.0
+peft==0.10.0
+datasets==2.21.0
+jupyter
