@@ -1,23 +1,23 @@
-# Use Python 3.11 slim image
-FROM python:3.11-slim
+# Use Python slim base
+FROM python:3.10-slim
 
-# Set working directory
-WORKDIR /workspace
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
 
-# Copy requirements
-COPY requirements.txt .
+WORKDIR /app
 
-# Upgrade pip first
-RUN pip install --no-cache-dir --upgrade pip
+# copy project files
+COPY . /app
 
-# Install PyTorch CPU version first
-RUN pip install --no-cache-dir torch==2.8.0 --index-url https://download.pytorch.org/whl/cpu
+# Install system deps
+RUN apt-get update && apt-get install -y git build-essential libsndfile1 ffmpeg && rm -rf /var/lib/apt/lists/*
 
-# Install remaining Python dependencies
-RUN pip install --no-cache-dir -r requirements.txt
+# Install Python deps (use your requirements.txt augmented)
+RUN pip install --upgrade pip
+RUN pip install -r requirements.txt
 
-# Copy all project files into the container
-COPY . .
+# Expose ports for FastAPI and Gradio
+EXPOSE 8000 7860
 
-# Start with bash shell
-CMD ["bash"]
+# default command: start the web app
+CMD ["python", "-m", "src.web.app"]
