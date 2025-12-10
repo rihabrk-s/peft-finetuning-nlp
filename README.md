@@ -48,3 +48,4 @@ Run with Docker
 docker-compose up --build
 
 This project shows how to make a language model work smarter, not harder, for a real corporate use case. The idea is to combine AI efficiency with practical business impact, and I’m excited to keep building on it.
+Ressources : https://www.philschmid.de/fine-tune-flan-t5-peft
