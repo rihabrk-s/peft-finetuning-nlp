@@ -10,14 +10,13 @@ Usage:
       --model_name microsoft/Phi-3-mini-4k-instruct \
       --train_file data/cleaned/training_data_8k_2024_sft.jsonl \
       --output_dir models/phi3-mini-lora \
-      --per_device_train_batch_size 4 \
+      --per_device_train_batch_size 2 \
       --num_train_epochs 3
 """
 import os
 import argparse
-import json
 from dataclasses import dataclass
-from typing import Dict, List
+from typing import Dict
 
 import torch
 from datasets import load_dataset
@@ -28,7 +27,7 @@ from transformers import (
     TrainingArguments,
     DataCollatorWithPadding,
 )
-from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training, TaskType
+from peft import LoraConfig, get_peft_model, TaskType
 
 
 @dataclass
@@ -42,10 +41,10 @@ def parse_args():
     p.add_argument("--model_name", type=str, default="microsoft/Phi-3-mini-4k-instruct")
     p.add_argument("--train_file", type=str, required=True)
     p.add_argument("--output_dir", type=str, default="models/phi3-mini-lora")
-    p.add_argument("--per_device_train_batch_size", type=int, default=4)
+    p.add_argument("--per_device_train_batch_size", type=int, default=2)  # lower for CPU
     p.add_argument("--num_train_epochs", type=int, default=3)
     p.add_argument("--learning_rate", type=float, default=3e-4)
-    p.add_argument("--cutoff_len", type=int, default=2048)
+    p.add_argument("--cutoff_len", type=int, default=1024)  # shorter seq for CPU
     p.add_argument("--lora_r", type=int, default=8)
     p.add_argument("--lora_alpha", type=int, default=32)
     p.add_argument("--lora_dropout", type=float, default=0.1)
@@ -59,10 +58,8 @@ def load_jsonl_dataset(path: str):
 
 
 def make_prompt(example: Dict) -> str:
-    # This concatenates instruction -> response pattern. Adjust if your dataset uses different format.
     prompt = example.get("prompt") or ""
     response = example.get("response") or ""
-    # We'll format as: "### Instruction:\n{prompt}\n\n### Response:\n{response}"
     return {"input": f"### Instruction:\n{prompt}\n\n### Response:\n", "target": response}
 
 
@@ -73,21 +70,14 @@ def tokenize_batch(batch, tokenizer, cutoff_len):
     with tokenizer.as_target_tokenizer():
         labels = tokenizer(targets, truncation=True, max_length=cutoff_len, padding=False)
 
-    # For causal LM, concatenate input+label into one sequence for training with attention mask.
-    # Many SFT scripts instead create labels that mask the input portion. We'll implement a simple approach:
-    input_ids = model_inputs["input_ids"]
-    label_ids = labels["input_ids"]
-
-    # Flatten to single sequence: input + label (but we will set labels to -100 for input portion)
     combined_input_ids = []
     combined_attention_mask = []
     combined_labels = []
-    for a, b in zip(input_ids, label_ids):
+
+    for a, b in zip(model_inputs["input_ids"], labels["input_ids"]):
         combined = a + b
         attn = [1] * len(combined)
-        # labels: -100 for instruction tokens (so loss computed only on the response)
         lbl = [-100] * len(a) + b
-        # truncate if needed
         if len(combined) > cutoff_len:
             combined = combined[-cutoff_len:]
             attn = attn[-cutoff_len:]
@@ -105,18 +95,20 @@ def main():
 
     print("Loading tokenizer and model:", args.model_name)
     tokenizer = AutoTokenizer.from_pretrained(args.model_name, use_fast=True)
-    # ensure tokenizer has pad token
     if tokenizer.pad_token_id is None:
         tokenizer.add_special_tokens({"pad_token": "[PAD]"})
 
-    # Load model
-    model = AutoModelForCausalLM.from_pretrained(args.model_name, trust_remote_code=True)
-    model.resize_token_embeddings(len(tokenizer))
+    # CPU-only model
+    model = AutoModelForCausalLM.from_pretrained(
+    args.model_name,          # use args.model_name instead of model_name
+    device_map={"": "cpu"},   # force all layers to CPU
+    torch_dtype=torch.float32,  # CPU works better with float32
+    trust_remote_code=True
+)
+    # model = prepare_model_for_kbit_training(model)
 
-    # Prepare for LoRA/k-bit training (optional: keep as standard FP16 if you have sufficient memory)
-    model = prepare_model_for_kbit_training(model)
 
-    # Create LoRA config
+    # LoRA config
     lora_config = LoraConfig(
         r=args.lora_r,
         lora_alpha=args.lora_alpha,
@@ -128,28 +120,22 @@ def main():
     model = get_peft_model(model, lora_config)
     print("PEFT model created. Trainable params:", sum(p.numel() for p in model.parameters() if p.requires_grad))
 
-    # Load dataset
+    # Load and process dataset
     ds = load_jsonl_dataset(args.train_file)
     print("Raw dataset example:", ds[0])
-
-    # Map to prompt/target
     ds = ds.map(lambda x: make_prompt(x), remove_columns=ds.column_names)
 
-    # Tokenize
-    def tok_func(batch):
-        return tokenize_batch(batch, tokenizer, args.cutoff_len)
-    tokenized = ds.map(tok_func, batched=True, batch_size=8, remove_columns=ds.column_names)
+    tokenized = ds.map(lambda batch: tokenize_batch(batch, tokenizer, args.cutoff_len),
+                       batched=True, batch_size=4, remove_columns=ds.column_names)
 
-    # Data collator will pad to max in batch
     data_collator = DataCollatorWithPadding(tokenizer, pad_to_multiple_of=None, return_tensors="pt")
 
-    # Training args
     training_args = TrainingArguments(
         output_dir=args.output_dir,
         per_device_train_batch_size=args.per_device_train_batch_size,
         num_train_epochs=args.num_train_epochs,
         learning_rate=args.learning_rate,
-        fp16=torch.cuda.is_available(),
+        fp16=False,  # CPU cannot use FP16
         logging_steps=args.logging_steps,
         save_steps=args.save_steps,
         save_total_limit=3,
@@ -171,6 +157,7 @@ def main():
     model.save_pretrained(args.output_dir)
     tokenizer.save_pretrained(args.output_dir)
     print("Saved.")
+
 
 if __name__ == "__main__":
     main()
