@@ -22,10 +22,36 @@ def load_model(base_model, adapter_dir, device):
     if tokenizer.pad_token_id is None:
         tokenizer.add_special_tokens({"pad_token": "[PAD]"})
     print("Loading base model (may take a while)...")
-    base = AutoModelForCausalLM.from_pretrained(base_model, trust_remote_code=True, device_map="auto" if device.startswith("cuda") else None)
+    if device.startswith("cuda"):
+        base = AutoModelForCausalLM.from_pretrained(base_model, trust_remote_code=True, device_map="auto")
+    else:
+        # CPU fallback: patch config and force eager attention
+        from transformers import AutoConfig
+        cfg = AutoConfig.from_pretrained(base_model, trust_remote_code=True)
+        if hasattr(cfg, "sliding_window"):
+            cfg.sliding_window = None
+        try:
+            base = AutoModelForCausalLM.from_pretrained(
+                base_model,
+                config=cfg,
+                trust_remote_code=True,
+                device_map=None,
+                torch_dtype=torch.float32,
+                attn_implementation="eager",
+            )
+        except TypeError:
+            print("Warning: attn_implementation kwarg not supported on this transformers version; loading with patched config only")
+            base = AutoModelForCausalLM.from_pretrained(
+                base_model,
+                config=cfg,
+                trust_remote_code=True,
+                device_map=None,
+                torch_dtype=torch.float32,
+            )
+
     # Wrap with PEFT adapters
     print("Loading adapters from:", adapter_dir)
-    model = PeftModel.from_pretrained(base, adapter_dir, device_map="auto" if device.startswith("cuda") else None)
+    model = PeftModel.from_pretrained(base, adapter_dir, device_map=("auto" if device.startswith("cuda") else {"": "cpu"}))
     return tokenizer, model
 
 def generate(tokenizer, model, instruction, max_new_tokens=256, temperature=0.2):
