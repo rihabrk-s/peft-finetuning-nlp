@@ -1,0 +1,154 @@
+#!/usr/bin/env python3
+"""
+QLoRA fine-tuning script (Kaggle GPU - NVIDIA T4)
+Dataset: data/cleaned/training_data_8k_2024_sft.jsonl
+"""
+
+import torch
+from datasets import load_dataset
+from transformers import (
+    AutoTokenizer,
+    AutoModelForCausalLM,
+    Trainer,
+    TrainingArguments,
+    BitsAndBytesConfig,
+    DataCollatorForLanguageModeling
+)
+from peft import (
+    LoraConfig,
+    get_peft_model,
+    prepare_model_for_kbit_training
+)
+
+# ======================
+# PATHS & CONFIG (RÉELS)
+# ======================
+
+MODEL_NAME = "microsoft/Phi-3-mini-4k-instruct"
+DATA_PATH = "data/cleaned/training_data_8k_2024_sft.jsonl"
+OUTPUT_DIR = "models/phi3-qlora-kaggle"
+MAX_LENGTH = 1024
+
+# ======================
+# QLoRA CONFIG
+# ======================
+
+bnb_config = BitsAndBytesConfig(
+    load_in_4bit=True,
+    bnb_4bit_quant_type="nf4",
+    bnb_4bit_compute_dtype=torch.float16,
+    bnb_4bit_use_double_quant=True
+)
+
+# ======================
+# TOKENIZER
+# ======================
+
+tokenizer = AutoTokenizer.from_pretrained(
+    MODEL_NAME,
+    trust_remote_code=True
+)
+tokenizer.pad_token = tokenizer.eos_token
+
+# ======================
+# MODEL
+# ======================
+
+model = AutoModelForCausalLM.from_pretrained(
+    MODEL_NAME,
+    quantization_config=bnb_config,
+    device_map="auto",
+    trust_remote_code=True
+)
+
+model = prepare_model_for_kbit_training(model)
+
+# ======================
+# LoRA CONFIG
+# ======================
+
+lora_config = LoraConfig(
+    r=8,
+    lora_alpha=16,
+    lora_dropout=0.05,
+    bias="none",
+    task_type="CAUSAL_LM",
+    target_modules=[
+        "q_proj",
+        "k_proj",
+        "v_proj",
+        "o_proj",
+        "gate_proj",
+        "up_proj",
+        "down_proj"
+    ]
+)
+
+model = get_peft_model(model, lora_config)
+model.print_trainable_parameters()
+
+# ======================
+# DATASET
+# ======================
+
+dataset = load_dataset("json", data_files=DATA_PATH, split="train")
+
+def format_prompt(example):
+    return {
+        "text": f"<|user|>\n{example['prompt']}\n<|assistant|>\n{example['response']}"
+    }
+
+dataset = dataset.map(format_prompt)
+
+def tokenize(example):
+    return tokenizer(
+        example["text"],
+        max_length=MAX_LENGTH,
+        truncation=True,
+        padding="max_length"
+    )
+
+dataset = dataset.map(
+    tokenize,
+    batched=True,
+    remove_columns=dataset.column_names
+)
+
+data_collator = DataCollatorForLanguageModeling(
+    tokenizer=tokenizer,
+    mlm=False
+)
+
+# ======================
+# TRAINING
+# ======================
+
+training_args = TrainingArguments(
+    output_dir=OUTPUT_DIR,
+    per_device_train_batch_size=1,
+    gradient_accumulation_steps=8,
+    learning_rate=2e-4,
+    num_train_epochs=1,
+    fp16=True,
+    logging_steps=10,
+    save_steps=500,
+    save_total_limit=2,
+    optim="paged_adamw_8bit",
+    report_to="none",
+    remove_unused_columns=False
+)
+
+trainer = Trainer(
+    model=model,
+    args=training_args,
+    train_dataset=dataset,
+    tokenizer=tokenizer,
+    data_collator=data_collator
+)
+
+trainer.train()
+
+trainer.save_model(OUTPUT_DIR)
+tokenizer.save_pretrained(OUTPUT_DIR)
+
+print("✅ QLoRA script ready — paths aligned with repository")
