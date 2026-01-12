@@ -25,7 +25,7 @@ from peft import (
 # ======================
 
 MODEL_NAME = "microsoft/Phi-3-mini-4k-instruct"
-DATA_PATH = "data/cleaned/training_data_8k_2024_sft.jsonl"
+DATA_PATH = "/kaggle/input/training-data-8k-2024-sft-jsonl/training_data_8k_2024_sft.jsonl"
 OUTPUT_DIR = "models/phi3-qlora-kaggle"
 MAX_LENGTH = 1024
 
