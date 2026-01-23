@@ -1,7 +1,13 @@
 #!/usr/bin/env python3
 """
 QLoRA fine-tuning script (Kaggle GPU - NVIDIA T4)
-Dataset: data/cleaned/training_data_8k_2024_sft.jsonl
+
+Dataset format (JSONL):
+{
+  "instruction": "...",
+  "input": "...",
+  "outpu": "..."
+}
 """
 
 import torch
@@ -21,7 +27,7 @@ from peft import (
 )
 
 # ======================
-# PATHS & CONFIG (RÉELS)
+# PATHS & CONFIG
 # ======================
 
 MODEL_NAME = "microsoft/Phi-3-mini-4k-instruct"
@@ -30,7 +36,7 @@ OUTPUT_DIR = "models/phi3-qlora-kaggle"
 MAX_LENGTH = 1024
 
 # ======================
-# QLoRA CONFIG
+# QLoRA (4-bit) CONFIG
 # ======================
 
 bnb_config = BitsAndBytesConfig(
@@ -91,14 +97,32 @@ model.print_trainable_parameters()
 # DATASET
 # ======================
 
-dataset = load_dataset("json", data_files=DATA_PATH, split="train")
+dataset = load_dataset(
+    "json",
+    data_files=DATA_PATH,
+    split="train"
+)
+
+# ---- FORMAT PROMPT (MATCHES DATA EXACTLY) ----
 
 def format_prompt(example):
     return {
-        "text": f"<|user|>\n{example['prompt']}\n<|assistant|>\n{example['response']}"
+        "text": (
+            "<|user|>\n"
+            f"{example['instruction']}\n\n"
+            f"{example['input']}\n"
+            "<|assistant|>\n"
+            f"{example['output']}"
+        )
     }
 
-dataset = dataset.map(format_prompt)
+
+dataset = dataset.map(
+    format_prompt,
+    remove_columns=dataset.column_names
+)
+
+# ---- TOKENIZATION ----
 
 def tokenize(example):
     return tokenizer(
@@ -110,8 +134,7 @@ def tokenize(example):
 
 dataset = dataset.map(
     tokenize,
-    batched=True,
-    remove_columns=dataset.column_names
+    batched=True
 )
 
 data_collator = DataCollatorForLanguageModeling(
@@ -148,7 +171,11 @@ trainer = Trainer(
 
 trainer.train()
 
+# ======================
+# SAVE ADAPTER
+# ======================
+
 trainer.save_model(OUTPUT_DIR)
 tokenizer.save_pretrained(OUTPUT_DIR)
 
-print("✅ QLoRA script ready — paths aligned with repository")
+print("✅ QLoRA training completed successfully")
