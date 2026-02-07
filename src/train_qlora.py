@@ -6,7 +6,7 @@ Dataset format (JSONL):
 {
   "instruction": "...",
   "input": "...",
-  "outpu": "..."
+  "output": "..."
 }
 """
 
@@ -103,19 +103,22 @@ dataset = load_dataset(
     split="train"
 )
 
-# ---- FORMAT PROMPT (MATCHES DATA EXACTLY) ----
+# ---- FORMAT PROMPT ----
 
 def format_prompt(example):
+    if example["input"].strip():
+        user_text = f"{example['instruction']}\n\n{example['input']}"
+    else:
+        user_text = example["instruction"]
+
     return {
         "text": (
             "<|user|>\n"
-            f"{example['instruction']}\n\n"
-            f"{example['input']}\n"
+            f"{user_text}\n"
             "<|assistant|>\n"
             f"{example['output']}"
         )
     }
-
 
 dataset = dataset.map(
     format_prompt,
@@ -125,16 +128,19 @@ dataset = dataset.map(
 # ---- TOKENIZATION ----
 
 def tokenize(example):
-    return tokenizer(
+    tokenized = tokenizer(
         example["text"],
         max_length=MAX_LENGTH,
         truncation=True,
         padding="max_length"
     )
+    tokenized["labels"] = tokenized["input_ids"].copy()
+    return tokenized
 
 dataset = dataset.map(
     tokenize,
-    batched=True
+    batched=True,
+    remove_columns=["text"]
 )
 
 data_collator = DataCollatorForLanguageModeling(
