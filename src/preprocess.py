@@ -1,31 +1,77 @@
-import os
+# preprocess_local.py
+from datasets import load_dataset
+from transformers import AutoTokenizer
 import json
-import pandas as pd
-from io import StringIO
 
-# Update the JSON file path to 2017q1.json
-RAW_PATH = "data/raw/financials/2017q1.json"
-OUTPUT_DIR = "data/cleaned/reports"
+# ---------------------------
+# Config
+# ---------------------------
+MODEL_NAME = "microsoft/Phi-3-mini-4k-instruct"
+DATA_PATH = "data/cleaned/training_data_8k_2024_sft.jsonl"
+MAX_LENGTH = 2048
+SAMPLE_OUTPUT = "tokenized_sample.json"
 
-# Ensure output directory exists
-os.makedirs(OUTPUT_DIR, exist_ok=True)
+# ---------------------------
+# Load tokenizer
+# ---------------------------
+tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+tokenizer.pad_token = tokenizer.eos_token  # Phi-3-mini may not have pad token
 
-print(f" Loading JSON file: {RAW_PATH}")
-with open(RAW_PATH, "r", encoding="utf-8") as f:
-    data = json.load(f)
+# ---------------------------
+# Load dataset
+# ---------------------------
+dataset = load_dataset("json", data_files=DATA_PATH, split="train")
+print("Raw dataset example:")
+print(dataset[0])
 
-# Convert each section (NUM, PRE, SUB, TAG) stored as text into DataFrame
-dfs = {}
-for key, content in data.items():
-    if key.endswith(".txt"):
-        print(f" Converting {key} to DataFrame...")
-        dfs[key] = pd.read_csv(StringIO(content), sep="\t")
+# ---------------------------
+# Format prompt function
+# ---------------------------
+def format_prompt(example):
+    return f"""### Instruction:
+{example['instruction']}
 
-# Save each DataFrame to CSV
-for key, df in dfs.items():
-    name = key.replace(".txt", "")
-    path = os.path.join(OUTPUT_DIR, f"{name}.csv")
-    df.to_csv(path, index=False)
-    print(f" Saved {path} ({df.shape[0]} rows, {df.shape[1]} columns)")
+### Input:
+{example['input']}
 
-print("\n All financial tables extracted and saved successfully!")
+### Response:
+{example['output']}"""
+
+# ---------------------------
+# Tokenization function
+# ---------------------------
+def tokenize_fn(example):
+    tokens = tokenizer(
+        format_prompt(example),
+        truncation=True,
+        padding="max_length",
+        max_length=MAX_LENGTH,
+    )
+    # LoRA / Trainer requires labels
+    tokens["labels"] = tokens["input_ids"].copy()
+    return tokens
+
+# ---------------------------
+# Tokenize dataset
+# ---------------------------
+print("\nTokenizing one sample for sanity check...")
+tok_sample = tokenize_fn(dataset[0])
+for k, v in tok_sample.items():
+    print(k, type(v), len(v))
+
+# ---------------------------
+# Map over entire dataset (optional, can be large)
+# ---------------------------
+# tokenized_ds = dataset.map(
+#     tokenize_fn,
+#     remove_columns=dataset.column_names
+# )
+# print(tokenized_ds[0])
+
+# ---------------------------
+# Save a small tokenized sample for checking
+# ---------------------------
+with open(SAMPLE_OUTPUT, "w") as f:
+    json.dump(tok_sample, f, indent=2)
+
+print(f"\n✅ Tokenized sample saved to {SAMPLE_OUTPUT}")

@@ -1,13 +1,7 @@
 #!/usr/bin/env python3
 """
 QLoRA fine-tuning script (Kaggle GPU - NVIDIA T4)
-
-Dataset format (JSONL):
-{
-  "instruction": "...",
-  "input": "...",
-  "output": "..."
-}
+Optimized to finish in reasonable time.
 """
 
 import torch
@@ -33,7 +27,10 @@ from peft import (
 MODEL_NAME = "microsoft/Phi-3-mini-4k-instruct"
 DATA_PATH = "/kaggle/input/training-data-8k-2024-sft-jsonl/training_data_8k_2024_sft.jsonl"
 OUTPUT_DIR = "models/phi3-qlora-kaggle"
-MAX_LENGTH = 1024
+
+MAX_LENGTH = 512                # 🚀 BIG speedup
+NUM_PROC = 4
+TRAIN_SIZE = 20000              # 🚀 enough for LoRA
 
 # ======================
 # QLoRA (4-bit) CONFIG
@@ -64,10 +61,14 @@ model = AutoModelForCausalLM.from_pretrained(
     MODEL_NAME,
     quantization_config=bnb_config,
     device_map="auto",
-    trust_remote_code=True
+    trust_remote_code=True,
+    attn_implementation="eager"   # 🚫 flash-attn drama
 )
 
 model = prepare_model_for_kbit_training(model)
+
+# 🔥 Disable checkpointing = faster (fits on T4 in 4-bit)
+model.gradient_checkpointing_disable()
 
 # ======================
 # LoRA CONFIG
@@ -103,6 +104,9 @@ dataset = load_dataset(
     split="train"
 )
 
+# Shuffle + subset (LoRA does NOT need full dataset)
+dataset = dataset.shuffle(seed=42).select(range(TRAIN_SIZE))
+
 # ---- FORMAT PROMPT ----
 
 def format_prompt(example):
@@ -122,25 +126,27 @@ def format_prompt(example):
 
 dataset = dataset.map(
     format_prompt,
-    remove_columns=dataset.column_names
+    remove_columns=dataset.column_names,
+    num_proc=NUM_PROC
 )
 
 # ---- TOKENIZATION ----
 
 def tokenize(example):
-    tokenized = tokenizer(
+    tokens = tokenizer(
         example["text"],
         max_length=MAX_LENGTH,
         truncation=True,
         padding="max_length"
     )
-    tokenized["labels"] = tokenized["input_ids"].copy()
-    return tokenized
+    tokens["labels"] = tokens["input_ids"].copy()
+    return tokens
 
 dataset = dataset.map(
     tokenize,
     batched=True,
-    remove_columns=["text"]
+    remove_columns=["text"],
+    num_proc=NUM_PROC
 )
 
 data_collator = DataCollatorForLanguageModeling(
@@ -155,11 +161,11 @@ data_collator = DataCollatorForLanguageModeling(
 training_args = TrainingArguments(
     output_dir=OUTPUT_DIR,
     per_device_train_batch_size=1,
-    gradient_accumulation_steps=8,
+    gradient_accumulation_steps=4,   # 🚀 faster
     learning_rate=2e-4,
     num_train_epochs=1,
     fp16=True,
-    logging_steps=10,
+    logging_steps=25,
     save_steps=500,
     save_total_limit=2,
     optim="paged_adamw_8bit",
@@ -171,7 +177,6 @@ trainer = Trainer(
     model=model,
     args=training_args,
     train_dataset=dataset,
-    tokenizer=tokenizer,
     data_collator=data_collator
 )
 
@@ -184,4 +189,4 @@ trainer.train()
 trainer.save_model(OUTPUT_DIR)
 tokenizer.save_pretrained(OUTPUT_DIR)
 
-print("✅ QLoRA training completed successfully")
+print("✅ QLoRA training finished successfully")
